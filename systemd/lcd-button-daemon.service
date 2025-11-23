@@ -1,0 +1,65 @@
+[Unit]
+Description=Lanner LCD Button Daemon
+After=multi-user.target dev-plcm_drv.device
+Wants=dev-plcm_drv.device
+ConditionPathExists=/dev/plcm_drv
+
+[Service]
+Type=forking
+PIDFile=/var/run/lcd_button_daemon.pid
+ExecStart=/usr/local/bin/lcd_button_daemon
+Restart=on-failure
+RestartSec=5s
+Nice=5
+
+# Security: User/group configuration
+User=root
+Group=lcd
+
+# Security: Privilege restrictions
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/run
+
+# Security: Kernel/system protection
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+
+# Security: Capabilities (none needed)
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# Security: Address family restrictions
+# Note: AF_INET and AF_NETLINK required for getifaddrs() network stats
+RestrictAddressFamilies=AF_UNIX AF_INET AF_NETLINK
+
+# Security: Namespace isolation
+# Note: PrivateDevices=no (needs /dev/plcm_drv access via lcd group)
+# Note: PrivateNetwork=no (needs /sys/class/net for stats)
+PrivateDevices=no
+PrivateNetwork=no
+RestrictNamespaces=yes
+
+# Security: Syscall filtering
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @obsolete
+SystemCallErrorNumber=EPERM
+
+# Security: Memory protections
+MemoryDenyWriteExecute=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+
+# Security: Miscellaneous
+RemoveIPC=yes
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

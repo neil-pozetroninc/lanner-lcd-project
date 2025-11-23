@@ -1,0 +1,269 @@
+--- plcm_drv.c	2025-11-23 13:20:09.524541639 -0800
++++ plcm_drv.c	2025-11-23 13:22:06.437380250 -0800
+@@ -9,7 +9,9 @@
+ #include <linux/sched.h>
+ #include <linux/delay.h>
+ #include <asm/io.h>
+-#include <asm/uaccess.h>
++#include <linux/uaccess.h>
++#include <linux/ioport.h>  // For request_region/release_region
++#include <linux/device.h>  // For device_create/class_create
+ #include "plcm_ioctl.h"
+ 
+ #if defined(OLDKERNEL)
+@@ -30,7 +32,7 @@
+ /*
+  * Device Major Number
+  */
+-#define PLCM_MAJOR 248
++#define PLCM_MAJOR 239
+ 
+ /*
+  * The DISPLAY_CAREFUL_MODE is just usable when the mode of parallel 
+@@ -46,6 +48,12 @@
+ static int stop_thread = 0;
+ 
+ /*
++ * Device class and device for udev integration
++ */
++static struct class *plcm_class = NULL;
++static struct device *plcm_device = NULL;
++
++/*
+  * Device Depend Function Prototypes
+  */
+ static void LCM_Init(void);
+@@ -66,6 +74,7 @@
+ static unsigned int  DataPort = 0;
+ static unsigned int  StatusPort = 0;
+ static unsigned int  ControlPort = 0;
++static int port_reserved = 0; // Track if we successfully reserved the port
+ static unsigned char Backlight = 0; // Backlight ON
+ static unsigned char Cur_Line = 1; // Current Line#
+ static unsigned char Cur_EntryMode = 0x04; // Current Entry Mode Set CMD
+@@ -387,6 +396,9 @@
+ 			stop_thread = 1;
+ 			break;
+ 		case PLCM_IOCTL_BACKLIGHT:
++			if (arg != 0 && arg != 1) {
++				return -EINVAL;
++			}
+ 			if(arg == 0)
+ 				Backlight = 1;
+ 			else if (arg == 1)
+@@ -394,6 +406,9 @@
+ 			LCM_Backlight();
+ 			break;
+ 		case PLCM_IOCTL_SET_LINE:
++			if (arg != 1 && arg != 2) {
++				return -EINVAL;
++			}
+ 			if(arg == 1)
+ 			{
+ 				Cur_Line = 1;
+@@ -413,6 +428,9 @@
+ 			LCM_Command(0, 0, 0x02, 1640, NULL);
+ 			break;
+ 		case PLCM_IOCTL_ENTRYMODE_ID:
++			if (arg != 0 && arg != 1) {
++				return -EINVAL;
++			}
+ 			if(arg == 0)
+ 				Cur_EntryMode &= ~0x02;
+ 			else if(arg == 1)
+@@ -420,6 +438,9 @@
+ 			LCM_Command(0, 0, Cur_EntryMode, 300, NULL);
+ 			break;
+ 		case PLCM_IOCTL_ENTRYMODE_SH:
++			if (arg != 0 && arg != 1) {
++				return -EINVAL;
++			}
+ 			if(arg == 0)
+ 				Cur_EntryMode &= ~0x01;
+ 			else if(arg == 1)
+@@ -427,6 +448,9 @@
+ 			LCM_Command(0, 0, Cur_EntryMode, 300, NULL);
+ 			break;
+ 		case PLCM_IOCTL_DISPLAY_D:
++			if (arg != 0 && arg != 1) {
++				return -EINVAL;
++			}
+ 			if(arg == 0)
+ 				Cur_Display &= ~0x04;
+ 			else if(arg == 1)
+@@ -434,6 +458,9 @@
+ 			LCM_Command(0, 0, Cur_Display, 300, NULL);
+ 			break;
+ 		case PLCM_IOCTL_DISPLAY_C:
++			if (arg != 0 && arg != 1) {
++				return -EINVAL;
++			}
+ 			if(arg == 0)
+ 				Cur_Display &= ~0x02;
+ 			else if(arg == 1)
+@@ -441,6 +468,9 @@
+ 			LCM_Command(0, 0, Cur_Display, 300, NULL);
+ 			break;
+ 		case PLCM_IOCTL_DISPLAY_B:
++			if (arg != 0 && arg != 1) {
++				return -EINVAL;
++			}
+ 			if(arg == 0)
+ 				Cur_Display &= ~0x01;
+ 			else if(arg == 1)
+@@ -448,6 +478,9 @@
+ 			LCM_Command(0, 0, Cur_Display, 300, NULL);
+ 			break; 
+ 		case PLCM_IOCTL_SHIFT_SC:
++			if (arg != 0 && arg != 1) {
++				return -EINVAL;
++			}
+ 			if(arg == 0)
+ 				Cur_Shift &= ~0x08;
+ 			else if(arg == 1)
+@@ -455,6 +488,9 @@
+ 			LCM_Command(0, 0, Cur_Shift, 300, NULL);
+ 			break;
+ 		case PLCM_IOCTL_SHIFT_RL:
++			if (arg != 0 && arg != 1) {
++				return -EINVAL;
++			}
+ 			if(arg == 0)
+ 			{
+ 				Cur_Shift &= ~0x04;
+@@ -476,6 +512,9 @@
+ 			return inb(StatusPort);
+ 			break;
+ 		case PLCM_IOCTL_INPUT_CHAR:
++			if (arg > 0xFF) {
++				return -EINVAL;
++			}
+ 			/*if(Cur_Line == 1)
+ 			{
+ 				LCM_Command(0, 0, 0x80+row, 300, NULL);
+@@ -549,6 +588,7 @@
+ };
+ #else
+ static const struct file_operations plcm_fops = {
++	.owner		= THIS_MODULE,
+ 	.read		= plcm_read,
+ 	.write		= plcm_write,
+ #if ( LINUX_VERSION_CODE < KERNEL_VERSION(2,6,36) )
+@@ -561,6 +601,27 @@
+ };
+ #endif
+ 
++/*
++ * Devnode callback to set default device permissions to 0660
++ * This ensures the device is created with secure permissions,
++ * and udev rules then apply group ownership (lcd)
++ *
++ * NOTE: On kernel 6.17+, this callback is called correctly but the kernel
++ * may override the mode to 0666 afterward. See KNOWN_ISSUES.md for details
++ * on this kernel behavior and workaround.
++ */
++static char *plcm_devnode(const struct device *dev, umode_t *mode)
++{
++	printk(KERN_INFO "plcm_drv: devnode callback called\n");
++	if (mode) {
++		*mode = 0660;  /* rw-rw---- */
++		printk(KERN_INFO "plcm_drv: devnode mode set to 0660\n");
++	} else {
++		printk(KERN_WARNING "plcm_drv: devnode mode pointer is NULL\n");
++	}
++	return NULL;
++}
++
+ int plcm_init(void)
+ {
+ 	/*
+@@ -572,13 +633,61 @@
+ 		return -EIO;
+ 	}
+ 	printk("Parallel LCM Driver Version %s is loaded\n", Driver_Version);
+-	LCM_Init();
+-	if(DataPort == 0)
+-	{
+-		printk("plcm_drv: unable to access any LPTx\n");
++
++	/* Detect LCD on parallel port - probe and reserve atomically */
++	LCM_Init(); // This probes LPT1/LPT2/LPT3 to find the LCD
++
++	if (DataPort == 0) {
++		printk(KERN_ERR "plcm_drv: unable to access any LPTx\n");
+ 		unregister_chrdev(PLCM_MAJOR, "plcm_drv");
+ 		return -EIO;
+ 	}
++
++	/* Reserve I/O port region (3 ports: data, status, control) */
++	if (!request_region(Port_Addr, 3, "plcm_drv")) {
++		printk(KERN_ERR "plcm_drv: I/O port region 0x%x already in use\n", Port_Addr);
++		unregister_chrdev(PLCM_MAJOR, "plcm_drv");
++		return -EBUSY;
++	}
++	port_reserved = 1;
++	printk(KERN_INFO "plcm_drv: Reserved I/O ports 0x%x-0x%x\n", Port_Addr, Port_Addr + 2);
++
++	/* Create device class for udev */
++	plcm_class = class_create("plcm");
++	if (IS_ERR(plcm_class)) {
++		int ret = PTR_ERR(plcm_class);
++		printk(KERN_ERR "plcm_drv: Failed to create device class\n");
++		release_region(Port_Addr, 3);
++		port_reserved = 0;
++		unregister_chrdev(PLCM_MAJOR, "plcm_drv");
++		plcm_class = NULL;
++		return ret;
++	}
++
++	/*
++	 * Set devnode callback to apply 0660 permissions by default
++	 * NOTE: On kernel 6.17+, the mode may be overridden to 0666 after this
++	 * callback runs. See KNOWN_ISSUES.md for details and workaround.
++	 */
++	plcm_class->devnode = plcm_devnode;
++	printk(KERN_INFO "plcm_drv: devnode callback registered\n");
++
++	/* Create device node - this triggers udev to apply rules */
++	plcm_device = device_create(plcm_class, NULL, MKDEV(PLCM_MAJOR, 0), NULL, "plcm_drv");
++	if (IS_ERR(plcm_device)) {
++		int ret = PTR_ERR(plcm_device);
++		printk(KERN_ERR "plcm_drv: Failed to create device\n");
++		class_destroy(plcm_class);
++		plcm_class = NULL;
++		release_region(Port_Addr, 3);
++		port_reserved = 0;
++		unregister_chrdev(PLCM_MAJOR, "plcm_drv");
++		plcm_device = NULL;
++		return ret;
++	}
++
++	printk(KERN_INFO "plcm_drv: Device created at /dev/plcm_drv\n");
++
+ #if 0
+ 	kernel_thread(plcm_thread, (void *)"Parallel LCM Thread", 0);
+ #endif
+@@ -590,6 +699,23 @@
+  */
+ void plcm_exit(void)
+ {
++	/* Destroy device and class in reverse order of creation */
++	if (plcm_device && !IS_ERR(plcm_device)) {
++		device_destroy(plcm_class, MKDEV(PLCM_MAJOR, 0));
++		plcm_device = NULL;
++	}
++	if (plcm_class && !IS_ERR(plcm_class)) {
++		class_destroy(plcm_class);
++		plcm_class = NULL;
++	}
++
++	/* Release I/O port region if we reserved it */
++	if (port_reserved) {
++		release_region(Port_Addr, 3);
++		printk(KERN_INFO "plcm_drv: Released I/O ports 0x%x-0x%x\n", Port_Addr, Port_Addr + 2);
++		port_reserved = 0;
++	}
++
+ 	/* Unregister the device */
+ 	unregister_chrdev(PLCM_MAJOR, "plcm_drv");
+ 	/* If there's an error, report it */

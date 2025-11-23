@@ -1,0 +1,103 @@
+--- Makefile	2025-11-23 13:20:09.524541639 -0800
++++ driver/Makefile	2025-11-23 12:12:43.359950331 -0800
+@@ -10,64 +10,58 @@
+ CC    := gcc
+ MODCFLAGS := -DMODULE -D__KERNEL__ -DLINUX -DOLDKERNEL -O -I/usr/src/linux-$(KINC)/include
+ 
+-# Makefile for a basic kernel module - 2.6.x
++# Makefile for a basic kernel module - 2.6.x and newer
+ obj-m := plcm_drv.o
+ KDIR  := /lib/modules/$(shell uname -r)/build
+ PWD   := $(shell pwd)
+ 
+-# MODULE -- This tells the header files to give the appropriate
+-# definitions for a kernel module.
++# Kernel module hardening flags
++# Note: Most hardening (stack protector, FORTIFY_SOURCE, retpoline, CFI, etc.)
++# is inherited automatically from the kernel's own KBUILD_CFLAGS and config.
++# Manually adding flags can cause ABI mismatches or build failures.
++# The kernel build system already applies appropriate hardening based on
++# CONFIG_FORTIFY_SOURCE, CONFIG_STACKPROTECTOR*, CONFIG_HARDENED_USERCOPY, etc.
+ #
+-# __KERNEL__ -- This tells the header files that this code will
+-# be run in kernel mode not as part of a user process.
+-#
+-# LINUX -- Technically speaking, this is not necessary. However,
+-# if you ever want to write a serious kernel module which will
+-# compile on more than one operating system, you'll be happy you
+-# did. This will allow you to do conditional compilation on the
+-# parts which are OS dependant.
++# We rely on the kernel's hardening configuration (see docs/plans/ for recommended
++# kernel config options like CONFIG_STRICT_KERNEL_RWX, CONFIG_HARDENED_USERCOPY).
+ #
++# Only add flags here if absolutely necessary and use cc-option to check support:
++# ccflags-y += $(call cc-option,-Wextra-hardening-flag)
++
++# User-space test programs with hardening
++HARDENING_CFLAGS = -fstack-protector-strong -D_FORTIFY_SOURCE=2 -fPIE -O2 -Wall -Wextra \
++                   -Wformat=2 -Wformat-security -fstack-clash-protection
++HARDENING_LDFLAGS = -pie -Wl,-z,relro,-z,now,-z,noexecstack
++
+ default:
+-	gcc -O2 ppdev_test.c -o ppdev_test
+-	gcc -O2 plcm_test.c -o plcm_test
+-	gcc -O2 plcm_cursor_char.c -o plcm_cursor_char
+-	gcc -g info_disp.c menu_objs.c -o lcd-menu  
++	$(CC) $(HARDENING_CFLAGS) ppdev_test.c -o ppdev_test $(HARDENING_LDFLAGS)
++	$(CC) $(HARDENING_CFLAGS) plcm_test.c -o plcm_test $(HARDENING_LDFLAGS)
++	$(CC) $(HARDENING_CFLAGS) plcm_cursor_char.c -o plcm_cursor_char $(HARDENING_LDFLAGS)  
+ 
+ boot:
+-ifeq ($(KVER3),3)
+ 	$(MAKE) -C $(KDIR) M=$(PWD) modules
+-endif
+-ifeq ($(KVER),2.6)
+-	$(MAKE) -C $(KDIR) M=$(PWD) modules
+-endif
+-ifeq ($(KVER),2.4)
+-	$(CC) $(MODCFLAGS) -c plcm_drv.c
++ifeq ($(wildcard lcd-menu),)
++	$(CC) $(HARDENING_CFLAGS) ppdev_test.c -o ppdev_test $(HARDENING_LDFLAGS)
++	$(CC) $(HARDENING_CFLAGS) plcm_test.c -o plcm_test $(HARDENING_LDFLAGS)
++	$(CC) $(HARDENING_CFLAGS) plcm_cursor_char.c -o plcm_cursor_char $(HARDENING_LDFLAGS)
+ endif
+ 
+-ifeq ($(wildcard lcd-menu),)
+-	gcc -O2 ppdev_test.c -o ppdev_test
+-	gcc -O2 plcm_test.c -o plcm_test
+-	gcc -O2 plcm_cursor_char.c -o plcm_cursor_char
+-	gcc -O2 info_disp.c menu_objs.c -o lcd-menu  
++load:
++	@if ! getent group lcd > /dev/null 2>&1; then \
++		echo "WARNING: 'lcd' group does not exist. Device will be root-only."; \
++		echo "The lcd-button-daemon service will fail to start."; \
++		echo "Create the group with: sudo groupadd -r lcd"; \
++	fi
++	rmmod plcm_drv || true
++ifeq ($(wildcard /dev/plcm_drv),)
++	mknod /dev/plcm_drv c 239 0
+ endif
+-	rmmod plcm_drv
+-ifeq ($(wildcard /dev/plcm_drv),) 
+-	mknod /dev/plcm_drv c 248 0
+-endif	
++	chown root:lcd /dev/plcm_drv || true
++	chmod 0660 /dev/plcm_drv || true
+ 	insmod plcm_drv.ko	
+-	install -m 755 lcd-menu /usr/bin/.
++	
+ clean:
+ 	rm -f plcm_test
+ 	rm -f plcm_cursor_char
+ 	rm -f ppdev_test
+-	rm -f lcd-menu 
+-	
+-ifeq ($(KVER3),3)
+ 	$(MAKE) -C $(KDIR) M=$(PWD) clean
+-endif
+-ifeq ($(KVER),2.6)
+-	$(MAKE) -C $(KDIR) M=$(PWD) clean
+-endif
+-ifeq ($(KVER),2.4)
+-	rm -f *.o *.ko
+-endif

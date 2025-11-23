@@ -1,0 +1,31 @@
+# Build artifacts
+*.o
+*.ko
+*.mod.c
+*.mod
+*.order
+*.symvers
+*.cmd
+.tmp_versions/
+Module.markers
+modules.order
+
+# Compiled programs
+programs/lcd_vitals
+programs/lcd_button_daemon
+programs/identify_updown
+driver/plcm_test
+driver/ppdev_test
+driver/plcm_cursor_char
+
+# IDE
+.idea/
+*.swp
+*.swo
+*~
+
+# Worktrees
+.worktrees/
+
+# Build directory artifacts
+build/

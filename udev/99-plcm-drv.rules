@@ -1,0 +1,3 @@
+# Lanner LCD driver device permissions
+# Sets /dev/plcm_drv to mode 0660, group lcd
+KERNEL=="plcm_drv", MODE="0660", GROUP="lcd", TAG+="systemd"
