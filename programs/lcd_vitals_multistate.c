@@ -3,6 +3,7 @@
 #include <string.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <errno.h>
 #include <sys/ioctl.h>
 #include <time.h>
 #include <ifaddrs.h>
@@ -28,6 +29,113 @@ typedef struct {
     char ip[INET_ADDRSTRLEN];
 } ip_info_t;
 
+// Known virtual interface prefixes - used as fallback when sysfs unavailable
+static const char *virtual_prefixes[] = {
+    // Basic
+    "lo",       // Loopback
+    "dummy",    // Dummy interface (testing/debugging)
+    // Containers
+    "docker",   // Docker bridge
+    "veth",     // Virtual Ethernet Pair (container networking)
+    "cali",     // Calico (Kubernetes)
+    "flannel",  // Flannel (Kubernetes)
+    "cni",      // Container Network Interface bridge
+    // VMs / Hypervisors
+    "virbr",    // Virtual Bridge (libvirt/KVM)
+    "vnet",     // Virtual Network (KVM/QEMU guest tap)
+    "vbox",     // VirtualBox
+    // VPN / Tunnels
+    "tun",      // Layer 3 tunnel (OpenVPN, Tailscale)
+    "tap",      // Layer 2 tunnel (VMs, OpenVPN)
+    "wg",       // WireGuard VPN
+    "ppp",      // Point-to-Point Protocol (VPNs, DSL)
+    // Overlays
+    "vxlan",    // Virtual Extensible LAN
+    "geneve",   // Generic Network Virtualization Encapsulation
+    "gre",      // Generic Routing Encapsulation (also matches gretap)
+    "ipip",     // IP-in-IP tunneling
+    "tunl",     // IP-in-IP tunneling
+    // L2 Logical
+    "br",       // Ethernet Bridge (br0, br-, bridge)
+    "bond",     // Bonding (Link Aggregation)
+    "team",     // Network Teaming
+    "macvlan",  // Virtual MAC on physical interface
+    "ipvlan",   // Virtual IP on physical interface
+    NULL
+};
+
+// Check if interface name matches known virtual prefixes
+static int matches_virtual_prefix(const char *ifname) {
+    for (int i = 0; virtual_prefixes[i] != NULL; i++) {
+        size_t prefix_len = strlen(virtual_prefixes[i]);
+        if (strncmp(ifname, virtual_prefixes[i], prefix_len) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// Returns 1 if the interface is virtual, 0 if physical
+// Uses readlink to check if device symlink points to /sys/devices/virtual/
+// Falls back to prefix matching when sysfs is unavailable
+int is_virtual_interface(const char *ifname) {
+    char path[256];
+    char target[4096];
+    ssize_t len;
+    int written;
+
+    // Input validation: NULL or empty name
+    if (ifname == NULL || ifname[0] == '\0') {
+        return 1;  // Invalid input, treat as virtual (skip it)
+    }
+
+    // Validate interface name length (IFNAMSIZ is typically 16 including null)
+    size_t name_len = strlen(ifname);
+    if (name_len >= IFNAMSIZ) {
+        return 1;  // Too long to be valid, treat as virtual
+    }
+
+    // Check for path traversal characters - interface names cannot contain /
+    if (strchr(ifname, '/') != NULL) {
+        return 1;  // Invalid character, treat as virtual
+    }
+
+    // Exact match for loopback (optimization - it has no device symlink anyway)
+    if (strcmp(ifname, "lo") == 0) {
+        return 1;
+    }
+
+    // Build path to device symlink with truncation check
+    written = snprintf(path, sizeof(path), "/sys/class/net/%s/device", ifname);
+    if (written < 0 || (size_t)written >= sizeof(path)) {
+        return 1;  // Truncation or error, treat as virtual
+    }
+
+    // Read the symlink target to determine if physical or virtual
+    len = readlink(path, target, sizeof(target) - 1);
+    if (len < 0) {
+        // ENOENT = no device symlink = definitely virtual (like loopback)
+        if (errno == ENOENT) {
+            return 1;
+        }
+        // Other errors (EACCES, etc.) = sysfs unavailable (containers/chroots)
+        // Fall back to prefix-based detection using known virtual interface names
+        return matches_virtual_prefix(ifname);
+    }
+
+    // Null-terminate the symlink target
+    target[len] = '\0';
+
+    // Check if the symlink target points to the virtual subsystem
+    // Virtual devices have symlinks like: ../../devices/virtual/net/...
+    // Physical devices point to: ../../devices/pci0000:00/...
+    if (strstr(target, "/virtual/") != NULL) {
+        return 1;  // Virtual interface
+    }
+
+    return 0;  // Physical interface
+}
+
 int collect_ip_addresses(ip_info_t *ips, int max_ips) {
     struct ifaddrs *ifaddr, *ifa;
     int count = 0;
@@ -43,10 +151,8 @@ int collect_ip_addresses(ip_info_t *ips, int max_ips) {
         if (!(ifa->ifa_flags & IFF_UP) || (ifa->ifa_flags & IFF_LOOPBACK))
             continue;
 
-        if (strncmp(ifa->ifa_name, "lo", 2) == 0 ||
-            strncmp(ifa->ifa_name, "docker", 6) == 0 ||
-            strncmp(ifa->ifa_name, "veth", 4) == 0 ||
-            strncmp(ifa->ifa_name, "br-", 3) == 0)
+        // Skip virtual interfaces - only show physical NICs
+        if (is_virtual_interface(ifa->ifa_name))
             continue;
 
         if (ifa->ifa_addr->sa_family == AF_INET) {
