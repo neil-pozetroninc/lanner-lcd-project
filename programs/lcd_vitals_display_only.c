@@ -3,12 +3,14 @@
 #include <string.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <errno.h>
 #include <sys/ioctl.h>
 #include <time.h>
 #include <ifaddrs.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <net/if.h>
+#include "network_interface_utils.h"
 
 #define PLCM_IOCTL_BACKLIGHT    0x01
 #define PLCM_IOCTL_CLEARDISPLAY 0x03
@@ -40,11 +42,8 @@ int collect_ip_addresses(ip_info_t *ips, int max_ips) {
         if (!(ifa->ifa_flags & IFF_UP) || (ifa->ifa_flags & IFF_LOOPBACK))
             continue;
 
-        // Check for physical interfaces (skip virtual)
-        if (strncmp(ifa->ifa_name, "lo", 2) == 0 ||
-            strncmp(ifa->ifa_name, "docker", 6) == 0 ||
-            strncmp(ifa->ifa_name, "veth", 4) == 0 ||
-            strncmp(ifa->ifa_name, "br-", 3) == 0)
+        // Skip virtual interfaces - only show physical NICs
+        if (is_virtual_interface(ifa->ifa_name))
             continue;
 
         if (ifa->ifa_addr->sa_family == AF_INET) {

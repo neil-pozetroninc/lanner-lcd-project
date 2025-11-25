@@ -3,6 +3,7 @@
 #include <string.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <errno.h>
 #include <time.h>
 #include <signal.h>
 #include <sys/ioctl.h>
@@ -14,6 +15,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <net/if.h>
+#include "network_interface_utils.h"
 
 #define PLCM_IOCTL_GET_KEYPAD   0x0C
 #define STATE_FILE_LINE1        "/var/run/lcd_line1_state"
@@ -54,10 +56,8 @@ int count_ip_addresses() {
         if (!(ifa->ifa_flags & IFF_UP) || (ifa->ifa_flags & IFF_LOOPBACK))
             continue;
 
-        if (strncmp(ifa->ifa_name, "lo", 2) == 0 ||
-            strncmp(ifa->ifa_name, "docker", 6) == 0 ||
-            strncmp(ifa->ifa_name, "veth", 4) == 0 ||
-            strncmp(ifa->ifa_name, "br-", 3) == 0)
+        // Skip virtual interfaces - only count physical NICs
+        if (is_virtual_interface(ifa->ifa_name))
             continue;
 
         if (ifa->ifa_addr->sa_family == AF_INET) {
