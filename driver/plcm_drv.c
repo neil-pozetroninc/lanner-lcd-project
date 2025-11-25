@@ -542,7 +542,7 @@ static int plcm_open(struct inode * inode, struct file * file)
 	 * Get the minor device number in case you have more than
 	 * one physical device using the driver.
 	 */
-	printk("Device: %d.%d\n", inode->i_rdev>>8, inode->i_rdev & 0xff);
+	pr_debug("Device: %d.%d\n", inode->i_rdev>>8, inode->i_rdev & 0xff);
 	/* we don't want to talk to two processes at the same time */
 	if(Device_Open) return -EBUSY;
 	Device_Open++;
@@ -551,7 +551,7 @@ static int plcm_open(struct inode * inode, struct file * file)
 	 * opened references to the module,if it's zero emmod will
 	 * fail)
 	 */
-	printk("Lanner Parallel LCM Driver Opened\n");
+	pr_debug("Lanner Parallel LCM Driver Opened\n");
 	return 0;
 }
 
@@ -565,7 +565,7 @@ static int plcm_release(struct inode * inode, struct file * file)
 	/* Decrement the usage count, otherwise once you opened the file
 	 * you'll never get rid of the module.
 	 */
-	printk(KERN_NOTICE "Lanner Parallel LCM Driver Closed\n");
+	pr_debug("Lanner Parallel LCM Driver Closed\n");
 	return 0;
 }
 
